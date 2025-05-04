@@ -2,5 +2,6 @@
 name = "hybrid_stream"
 version = "0.1.0"
 edition = "2021"
+authors = ["Jacob Hatami <mjhatamy@gmail.com>"]
 
 [dependencies]

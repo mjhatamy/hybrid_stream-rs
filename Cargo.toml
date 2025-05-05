@@ -5,3 +5,10 @@ edition = "2021"
 authors = ["Jacob Hatami <mjhatamy@gmail.com>"]
 
 [dependencies]
+reqwest = { version = "0.11", features = ["stream"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+bytes = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+sysinfo = "0.35.0"
+pin-project = "1.1.10"

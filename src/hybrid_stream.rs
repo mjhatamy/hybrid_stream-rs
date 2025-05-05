@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
 use futures::stream::{Stream, StreamExt};
 use futures::task::{Context, Poll};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -104,12 +104,6 @@ impl StorageBackend {
     }
 }
 
-// Storage options for HybridStream
-pub struct StorageOptions {
-    pub temp_dir: PathBuf,
-    pub memory_threshold: f32, // Percentage (0.0-1.0)
-}
-
 // Inner state of the stream, wrapped in Arc to avoid Drop conflict
 struct HybridStreamState {
     index: u32,
@@ -118,6 +112,7 @@ struct HybridStreamState {
     data_available: Arc<Mutex<bool>>,
     source_done: Arc<Mutex<bool>>,
     error: Arc<Mutex<Option<HybridStreamError>>>,
+    temp_dir: Option<PathBuf>, // Directory to clean up on drop
 }
 
 impl Drop for HybridStreamState {
@@ -131,6 +126,11 @@ impl Drop for HybridStreamState {
         if let Ok(storage) = self.storage.lock() {
             let _ = storage.cleanup();
         }
+
+        // Attempt to clean up the temp directory if we created one
+        if let Some(dir) = &self.temp_dir {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 }
 
@@ -140,31 +140,41 @@ pub struct HybridStream {
 }
 
 impl HybridStream {
-    // Create a new HybridStream with the given source stream
+    // Create a new HybridStream with the given source stream and memory threshold
     pub fn new<S, E, F>(
         index: u32,
         source_stream: S,
         error_mapper: F,
-        options: StorageOptions,
+        memory_threshold: f32,
     ) -> io::Result<Self>
     where
         S: Stream<Item = Result<Bytes, E>> + Send + 'static,
         E: std::error::Error + Send + Sync + 'static,
         F: Fn(Box<dyn std::error::Error + Send + Sync>) -> HybridStreamError + Send + Sync + 'static,
     {
-        // Check system memory to decide storage type
-        let storage = if Self::should_use_file_storage(options.memory_threshold) {
-            // Create a temporary file
-            if !options.temp_dir.exists() {
-                std::fs::create_dir_all(&options.temp_dir)?;
-            }
+        // Get the system temp directory
+        let system_temp = std::env::temp_dir();
 
-            let file_name = format!("stream_{}_idx{}.tmp", Uuid::new_v4(), index);
-            let file_path = options.temp_dir.join(file_name);
+        // Create a unique directory for this program's streams
+        let instance_uuid = Uuid::new_v4();
+        let temp_dir = system_temp.join(format!("hybrid_streams_{}", instance_uuid));
+
+        // Create the temp directory if we'll use file storage
+        let mut created_temp_dir = false;
+
+        // Check system memory to decide storage type
+        let storage = if Self::should_use_file_storage(memory_threshold) {
+            // Create the temp directory
+            fs::create_dir_all(&temp_dir)?;
+            created_temp_dir = true;
+
+            // Create a temporary file
+            let file_name = format!("stream_{}.tmp", index);
+            let file_path = temp_dir.join(file_name);
             let file = File::create(&file_path)?;
 
             println!("Memory usage high (>{}%). Using file storage for stream {}.",
-                     options.memory_threshold * 100.0, index);
+                     memory_threshold * 100.0, index);
 
             StorageBackend::File {
                 path: file_path,
@@ -236,6 +246,7 @@ impl HybridStream {
             data_available,
             source_done,
             error,
+            temp_dir: if created_temp_dir { Some(temp_dir) } else { None },
         };
 
         Ok(Self {
@@ -310,3 +321,5 @@ impl Stream for HybridStream {
         Poll::Pending
     }
 }
+
+// Example usage
